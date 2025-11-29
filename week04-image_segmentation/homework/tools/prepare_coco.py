@@ -57,8 +57,8 @@ def main():
     random.seed(42)
     random.shuffle(person_images)
 
-    train_count = 500
-    val_count = 300
+    train_count = 750
+    val_count = 50
     test_count = 300
 
     train_images = person_images[:train_count]
@@ -85,4 +85,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

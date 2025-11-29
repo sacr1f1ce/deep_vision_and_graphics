@@ -52,7 +52,8 @@ class PersonSegModule(pl.LightningModule):
         masks = batch["mask"]
 
         logits = self(inputs)
-        loss = self.criterion(logits, masks)
+        loss = self.model.compute_loss(logits, masks)
+        # loss = self.criterion(logits, masks)
 
         self.train_loss.update(loss.detach())
         self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=False, batch_size=inputs.size(0))
@@ -69,7 +70,8 @@ class PersonSegModule(pl.LightningModule):
         masks = batch["mask"]
 
         logits = self(inputs)
-        loss = self.criterion(logits, masks)
+        loss = self.model.compute_loss(logits, masks)
+        # loss = self.criterion(logits, masks)
         preds = torch.argmax(logits, dim=1)
 
         self.val_loss.update(loss.detach())
@@ -82,7 +84,7 @@ class PersonSegModule(pl.LightningModule):
         iou = self.val_iou.compute()
 
         self.log("val/loss", loss, prog_bar=False)
-        self.log("val/mIoU", iou, prog_bar=True)
+        self.log("val_mIoU", iou, prog_bar=True)
 
         self.val_loss.reset()
         self.val_iou.reset()
@@ -92,7 +94,8 @@ class PersonSegModule(pl.LightningModule):
         masks = batch["mask"]
 
         logits = self(inputs)
-        loss = self.criterion(logits, masks)
+        loss = self.model.compute_loss(logits, masks)
+        # loss = self.criterion(logits, masks)
         preds = torch.argmax(logits, dim=1)
 
         self.test_loss.update(loss.detach())

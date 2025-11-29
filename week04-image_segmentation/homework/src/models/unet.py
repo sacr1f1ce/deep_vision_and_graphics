@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
-
 from models.base import BaseSegmentationModel
 
 __all__ = ["UNetResNet50", "UNetResNet50RGB"]
@@ -18,7 +17,6 @@ class UNetResNet50(BaseSegmentationModel):
 
         self.num_classes = num_classes
         self.criterion = nn.CrossEntropyLoss()
-        self.input_channels = in_channels
 
         resnet = models.resnet50(pretrained=pretrained)
 
@@ -29,26 +27,26 @@ class UNetResNet50(BaseSegmentationModel):
         self.encoder5 = resnet.layer4
 
         self.bridge = nn.Sequential(
-            nn.Conv2d(2048, 2048, kernel_size=3, padding=1),
+            nn.Conv2d(2048, 2048, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(2048),
             nn.ReLU(inplace=True),
         )
 
-        self.up1 = nn.ConvTranspose2d(2048, 1024, kernel_size=2, stride=2)
+        self.up1 = self._make_up_block(2048, 1024)
         self.dec1 = self._make_decoder_block(2048, 1024)
 
-        self.up2 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.up2 = self._make_up_block(1024, 512)
         self.dec2 = self._make_decoder_block(1024, 512)
 
-        self.up3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.up3 = self._make_up_block(512, 256)
         self.dec3 = self._make_decoder_block(512, 256)
 
-        self.up4 = nn.ConvTranspose2d(256, 64, kernel_size=2, stride=2)
+        self.up4 = self._make_up_block(256, 64)
         self.dec4 = self._make_decoder_block(128, 64)
 
-        self.up5 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
+        self.up5 = self._make_up_block(64, 64)
         self.dec5 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
         )
@@ -56,12 +54,21 @@ class UNetResNet50(BaseSegmentationModel):
         self.final = nn.Conv2d(64, num_classes, kernel_size=1)
 
     @staticmethod
-    def _make_decoder_block(in_channels: int, out_channels: int) -> nn.Sequential:
+    def _make_up_block(in_channels: int, out_channels: int) -> nn.Sequential:
         return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+        )
+
+    @staticmethod
+    def _make_decoder_block(in_channels: int, out_channels: int) -> nn.Sequential:
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
@@ -69,10 +76,12 @@ class UNetResNet50(BaseSegmentationModel):
     @staticmethod
     def _match_size(x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if x.shape[2:] != target.shape[2:]:
-            x = F.interpolate(x, size=target.shape[2:], mode="bilinear", align_corners=False)
+            x = F.interpolate(
+                x, size=target.shape[2:], mode="bilinear", align_corners=False
+            )
         return x
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_features: bool = False) -> torch.Tensor:
         input_size: Tuple[int, int] = x.shape[2:]
 
         enc1 = self.encoder1(x)
@@ -106,8 +115,13 @@ class UNetResNet50(BaseSegmentationModel):
         dec5 = self.up5(dec4)
         dec5 = self.dec5(dec5)
 
+        if return_features:
+            return dec5
+
         output = self.final(dec5)
-        output = F.interpolate(output, size=input_size, mode="bilinear", align_corners=False)
+        output = F.interpolate(
+            output, size=input_size, mode="bilinear", align_corners=False
+        )
 
         return output
 

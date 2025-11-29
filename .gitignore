@@ -1,4 +1,9 @@
 */tiny-imagenet-200
+*/data/*
+
+homework03/celeba/*
+week04-image_segmentation/homework/data/*
+week04-image_segmentation/homework/logs_*
 
 # node and NPM
 npm-debug.log

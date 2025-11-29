@@ -5,19 +5,27 @@ from typing import Dict, Optional, Tuple
 
 import albumentations as A
 import numpy as np
+import torch
 from albumentations.pytorch import ToTensorV2
 from PIL import Image
 from pycocotools.coco import COCO
 from torch.utils.data import Dataset
 
-__all__ = ["PersonSegmentationDataset", "build_train_transform", "build_eval_transform"]
+__all__ = [
+    "PersonSegmentationDataset",
+    "build_geometric_transform",
+    "build_pixel_transform",
+    "build_eval_transform",
+]
 
 
 def _resolve_additional_targets(include_depth: bool) -> Optional[Dict[str, str]]:
     return {"depth": "image"} if include_depth else None
 
 
-def build_train_transform(image_size: Tuple[int, int], include_depth: bool) -> A.Compose:
+def build_geometric_transform(
+    image_size: Tuple[int, int], include_depth: bool
+) -> A.Compose:
     additional_targets = _resolve_additional_targets(include_depth)
     return A.Compose(
         [
@@ -29,23 +37,28 @@ def build_train_transform(image_size: Tuple[int, int], include_depth: bool) -> A
                 border_mode=0,
                 p=0.5,
             ),
-            A.ColorJitter(0.2, 0.2, 0.2, 0.1, p=0.5),
-            A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2(),
         ],
         additional_targets=additional_targets,
     )
 
 
-def build_eval_transform(image_size: Tuple[int, int], include_depth: bool) -> A.Compose:
-    additional_targets = _resolve_additional_targets(include_depth)
+def build_pixel_transform() -> A.Compose:
+    return A.Compose(
+        [
+            A.ColorJitter(0.2, 0.2, 0.2, 0.1, p=0.5),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2(),
+        ]
+    )
+
+
+def build_eval_transform() -> A.Compose:
     return A.Compose(
         [
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ToTensorV2(),
-        ],
-        additional_targets=additional_targets,
+        ]
     )
 
 
@@ -64,6 +77,7 @@ class PersonSegmentationDataset(Dataset):
         self.ann_file = Path(ann_file).resolve()
         self.image_size = image_size
         self.depth_dir = Path(depth_dir).resolve() if depth_dir else None
+        self.augment = augment
 
         if not self.ann_file.exists():
             raise FileNotFoundError(f"Annotation file not found: {self.ann_file}")
@@ -78,8 +92,15 @@ class PersonSegmentationDataset(Dataset):
         self.img_ids = self.coco.getImgIds(catIds=[self.person_cat_id])
 
         include_depth = self.depth_dir is not None
-        transform_builder = build_train_transform if augment else build_eval_transform
-        self.transform = transform_builder(self.image_size, include_depth)
+
+        if self.augment:
+            self.geometric_transform = build_geometric_transform(
+                self.image_size, include_depth
+            )
+            self.pixel_transform = build_pixel_transform()
+        else:
+            self.geometric_transform = None
+            self.pixel_transform = build_eval_transform()
 
     def __len__(self) -> int:
         return len(self.img_ids)
@@ -108,7 +129,9 @@ class PersonSegmentationDataset(Dataset):
                 continue
 
             ann_mask = Image.fromarray(ann_mask.astype(np.uint8) * 255)
-            ann_mask = ann_mask.resize((self.image_size[1], self.image_size[0]), Image.NEAREST)
+            ann_mask = ann_mask.resize(
+                (self.image_size[1], self.image_size[0]), Image.NEAREST
+            )
             ann_mask = np.array(ann_mask, dtype=np.uint8)
             mask[ann_mask > 0] = 1
 
@@ -128,7 +151,9 @@ class PersonSegmentationDataset(Dataset):
         depth = np.load(npy_path)
         if depth.shape != self.image_size:
             depth_image = Image.fromarray(depth.astype(np.float32), mode="F")
-            depth_image = depth_image.resize((self.image_size[1], self.image_size[0]), Image.BILINEAR)
+            depth_image = depth_image.resize(
+                (self.image_size[1], self.image_size[0]), Image.BILINEAR
+            )
             depth = np.array(depth_image, dtype=np.float32)
 
         return depth
@@ -145,14 +170,23 @@ class PersonSegmentationDataset(Dataset):
         depth = self._load_depth(img_id, img_info["file_name"])
 
         if depth is not None:
-            transformed = self.transform(image=image, mask=mask, depth=depth)
-            image_tensor = transformed["image"]
-            mask_tensor = transformed["mask"].long()
-            depth_tensor = transformed["depth"]
+            if self.geometric_transform:
+                transformed = self.geometric_transform(
+                    image=image, mask=mask, depth=depth
+                )
+                image = transformed["image"]
+                mask = transformed["mask"]
+                depth = transformed["depth"]
+
+            transformed_img = self.pixel_transform(image=image)
+            image_tensor = transformed_img["image"]
+
+            mask_tensor = torch.from_numpy(mask).long()
+
+            depth_tensor = torch.from_numpy(depth)
             if depth_tensor.dim() == 2:
                 depth_tensor = depth_tensor.unsqueeze(0)
-            elif depth_tensor.dim() == 3 and depth_tensor.size(0) == 3:
-                depth_tensor = depth_tensor.mean(dim=0, keepdim=True)
+
             return {
                 "image": image_tensor,
                 "mask": mask_tensor,
@@ -160,8 +194,13 @@ class PersonSegmentationDataset(Dataset):
                 "id": img_id,
             }
 
-        transformed = self.transform(image=image, mask=mask)
-        image_tensor = transformed["image"]
-        mask_tensor = transformed["mask"].long()
-        return {"image": image_tensor, "mask": mask_tensor, "id": img_id}
+        if self.geometric_transform:
+            transformed = self.geometric_transform(image=image, mask=mask)
+            image, mask = transformed["image"], transformed["mask"]
 
+        transformed = self.pixel_transform(image=image)
+        image_tensor = transformed["image"]
+
+        mask_tensor = torch.from_numpy(mask).long()
+
+        return {"image": image_tensor, "mask": mask_tensor, "id": img_id}

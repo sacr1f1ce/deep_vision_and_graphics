@@ -8,7 +8,6 @@ import numpy as np
 from PIL import Image
 
 import torch
-import torchvision.transforms.functional as TF
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 
@@ -92,7 +91,7 @@ def main() -> None:
     if visualize:
         preview_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
     processor, model = load_model(device)
 
     required_filenames: List[str] | None = None
@@ -137,5 +136,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
